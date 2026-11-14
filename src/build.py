@@ -24,6 +24,7 @@ nav{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px}nav a{white-space:no
 nav a.on{background:var(--fg);color:var(--bg)}
 h2{font-size:1.1rem;margin:28px 0 4px}.lead{color:var(--muted);font-size:.85rem;margin:0 0 12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+@media(max-width:600px){.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.card{padding:8px}}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px}
 .card a.main{display:flex;flex-direction:column;gap:6px;text-decoration:none}
 .hist{font-size:.75rem;color:var(--muted);margin-top:auto}
@@ -37,8 +38,9 @@ h2{font-size:1.1rem;margin:28px 0 4px}.lead{color:var(--muted);font-size:.85rem;
 .cta{display:inline-block;background:var(--accent);color:#fff;font-weight:700;text-decoration:none;padding:10px 20px;border-radius:8px}
 .chart{position:relative;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;--series:#2563eb}
 @media(prefers-color-scheme:dark){.chart{--series:#60a5fa}}
-.chart svg{display:block;width:100%;height:auto}
-.chart .grid-l{stroke:var(--line);stroke-width:1}.chart text{fill:var(--muted);font-size:13px}
+.chart{max-width:560px}.chart svg{display:block;width:100%;height:auto}
+.chart .grid-l{stroke:var(--line);stroke-width:1}.chart text{fill:var(--muted);font-size:12px}
+.chart .line,.chart .grid-l,.chart .cross{vector-effect:non-scaling-stroke}
 .chart .last{fill:var(--fg);font-weight:700}
 .chart .line{fill:none;stroke:var(--series);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
 .chart .dot{fill:var(--series);stroke:var(--card);stroke-width:2}
@@ -156,7 +158,8 @@ def item_filename(code: str) -> str:
 
 def price_chart(obs: list[tuple[str, int]]) -> str:
     """価格の折れ線（単一系列）。点は実際に観測した日だけに打つ。"""
-    W, H, L, R, T, B = 480, 230, 70, 78, 34, 30
+    # viewBox はスマホ幅とほぼ等倍になる大きさにする（縮小で文字が読めなくなるのを防ぐ）
+    W, H, L, R, T, B = 360, 210, 62, 70, 34, 30
     days = [Date.fromisoformat(d).toordinal() for d, _ in obs]
     prices = [p for _, p in obs]
     lo, hi = min(prices), max(prices)
