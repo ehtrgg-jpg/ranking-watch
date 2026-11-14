@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
+from datetime import date as Date
 from html import escape
 from pathlib import Path
 
@@ -22,7 +24,29 @@ nav{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px}nav a{white-space:no
 nav a.on{background:var(--fg);color:var(--bg)}
 h2{font-size:1.1rem;margin:28px 0 4px}.lead{color:var(--muted);font-size:.85rem;margin:0 0 12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px;text-decoration:none}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.card a.main{display:flex;flex-direction:column;gap:6px;text-decoration:none}
+.hist{font-size:.75rem;color:var(--muted);margin-top:auto}
+.item{display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);gap:20px;align-items:start;margin-top:20px}
+@media(max-width:600px){.item{grid-template-columns:1fr}.item img,.item .noimg{max-width:220px}}
+.item img,.item .noimg{width:100%;aspect-ratio:1;object-fit:contain;border-radius:10px;background:#fff;border:1px solid var(--line)}
+.item h2{margin:0 0 8px;font-size:1.05rem}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:12px 0}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.stat b{display:block;font-size:1.1rem;font-variant-numeric:tabular-nums}.stat span{font-size:.72rem;color:var(--muted)}
+.cta{display:inline-block;background:var(--accent);color:#fff;font-weight:700;text-decoration:none;padding:10px 20px;border-radius:8px}
+.chart{position:relative;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;--series:#2563eb}
+@media(prefers-color-scheme:dark){.chart{--series:#60a5fa}}
+.chart svg{display:block;width:100%;height:auto}
+.chart .grid-l{stroke:var(--line);stroke-width:1}.chart text{fill:var(--muted);font-size:13px}
+.chart .last{fill:var(--fg);font-weight:700}
+.chart .line{fill:none;stroke:var(--series);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart .dot{fill:var(--series);stroke:var(--card);stroke-width:2}
+.chart .cross{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}.chart .hit{fill:transparent}
+.tip{position:absolute;top:8px;transform:translateX(-50%);background:var(--fg);color:var(--bg);font-size:.78rem;padding:3px 9px;border-radius:6px;white-space:nowrap;pointer-events:none}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;font-size:.85rem}
+th,td{padding:7px 12px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted);font-weight:400;font-size:.75rem}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}.down{color:var(--accent)}
 .card:hover{border-color:var(--accent)}
 .card img,.noimg{width:100%;aspect-ratio:1;object-fit:contain;border-radius:6px;background:#fff}
 .noimg{display:block;background:var(--line)}
@@ -103,12 +127,122 @@ def card(it: dict, show_rank: bool = True) -> str:
     was = f'<span class="was">{yen(it["was"])}</span>' if it["was"] and it["drop_pct"] else ""
     review = f' ・ ★{it["review_avg"]}（{it["review_count"]:,}件）' if it["review_count"] else ""
     rank = f'{it["rank"]}位 ・ ' if show_rank else ""
+    hist = f'<a class="hist" href="{it["page"]}">価格推移を見る →</a>' if it.get("page") else ""
     return (
-        f'<a class="card" href="{escape(it["url"])}" target="_blank" rel="sponsored nofollow noopener">'
+        f'<div class="card"><a class="main" href="{escape(it["url"])}" target="_blank" rel="sponsored nofollow noopener">'
         f'{img}<span class="tags">{"".join(tags)}</span>'
         f'<span class="name">{escape(it["name"])}</span>'
         f'<span class="price">{yen(it["price"])}{was}</span>'
-        f'<span class="meta">{rank}{escape(it["shop"])}{review}</span></a>'
+        f'<span class="meta">{rank}{escape(it["shop"])}{review}</span></a>{hist}</div>'
+    )
+
+
+def build_history(snaps: list[dict]) -> dict[str, dict]:
+    """商品コードごとの観測履歴。obs は日付順の {日付: {price, ranks{ジャンルID: 順位}}}。"""
+    hist: dict[str, dict] = {}
+    for snap in snaps:
+        for gid, items in snap["genres"].items():
+            for it in items:
+                h = hist.setdefault(it["code"], {"obs": {}})
+                h["info"], h["last_date"] = it, snap["date"]
+                o = h["obs"].setdefault(snap["date"], {"price": it["price"], "ranks": {}})
+                o["ranks"][gid] = it["rank"]
+    return hist
+
+
+def item_filename(code: str) -> str:
+    return "item-" + re.sub(r"[^A-Za-z0-9_-]", "-", code) + ".html"
+
+
+def price_chart(obs: list[tuple[str, int]]) -> str:
+    """価格の折れ線（単一系列）。点は実際に観測した日だけに打つ。"""
+    W, H, L, R, T, B = 480, 230, 70, 78, 34, 30
+    days = [Date.fromisoformat(d).toordinal() for d, _ in obs]
+    prices = [p for _, p in obs]
+    lo, hi = min(prices), max(prices)
+    pad = (hi - lo) * 0.15 or hi * 0.05 or 1
+    y0, y1 = lo - pad, hi + pad
+    span = (days[-1] - days[0]) or 1
+
+    def X(d: int) -> float:
+        return round(L + (d - days[0]) / span * (W - L - R), 1)
+
+    def Y(p: float) -> float:
+        return round(T + (y1 - p) / (y1 - y0) * (H - T - B), 1)
+
+    pts = [(X(d), Y(p)) for d, p in zip(days, prices)]
+    grid = "".join(
+        f'<line class="grid-l" x1="{L}" x2="{W - R}" y1="{Y(v)}" y2="{Y(v)}"/>'
+        f'<text x="{L - 8}" y="{Y(v) + 4}" text-anchor="end">{v:,}円</text>'
+        for v in sorted({lo, hi}))
+    hits = []
+    for i, (x, _) in enumerate(pts):
+        left = (pts[i - 1][0] + x) / 2 if i else 0
+        right = (pts[i + 1][0] + x) / 2 if i < len(pts) - 1 else W
+        hits.append(f'<rect class="hit" x="{left}" y="0" width="{round(right - left, 1)}" height="{H}" '
+                    f'data-x="{x}" data-t="{obs[i][0]}　{yen(prices[i])}"/>')
+    lx, ly = pts[-1]
+    return (
+        f'<div class="chart"><div class="tip" hidden></div>'
+        f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="価格推移グラフ。詳細は下の表を参照">'
+        f'{grid}'
+        f'<text x="{L}" y="{H - 8}">{obs[0][0][5:].replace("-", "/")}</text>'
+        f'<text x="{W - R}" y="{H - 8}" text-anchor="end">{obs[-1][0][5:].replace("-", "/")}</text>'
+        f'<line class="cross" y1="{T - 10}" y2="{H - B}" style="display:none"/>'
+        f'<polyline class="line" points="{" ".join(f"{x},{y}" for x, y in pts)}"/>'
+        f'{"".join(f"""<circle class="dot" cx="{x}" cy="{y}" r="4"/>""" for x, y in pts)}'
+        f'<text class="last" x="{lx + 9}" y="{ly + 4}">{prices[-1]:,}円</text>'
+        f'{"".join(hits)}</svg></div>'
+    )
+
+
+CHART_JS = """<script>
+document.querySelectorAll('.chart').forEach(function(c){
+  var tip=c.querySelector('.tip'),cross=c.querySelector('.cross'),w=c.querySelector('svg').viewBox.baseVal.width;
+  c.querySelectorAll('.hit').forEach(function(h){h.addEventListener('pointerenter',function(){
+    var x=h.dataset.x;tip.textContent=h.dataset.t;tip.hidden=false;
+    tip.style.left=Math.min(84,Math.max(16,x/w*100))+'%';
+    cross.setAttribute('x1',x);cross.setAttribute('x2',x);cross.style.display='';});});
+  c.addEventListener('pointerleave',function(){tip.hidden=true;cross.style.display='none';});
+});
+</script>"""
+
+
+def item_page_body(h: dict, today: str, names: dict[str, str]) -> str:
+    it = h["info"]
+    obs = [(d, o["price"]) for d, o in h["obs"].items()]
+    prices = [p for _, p in obs]
+    current = h["last_date"] == today
+    img = (f'<img src="{escape(it["image"])}" alt="" width="128" height="128">'
+           if it["image"] else '<span class="noimg"></span>')
+    stats = [
+        ("現在の価格" if current else f"最終観測価格（{h['last_date']}）", yen(prices[-1])),
+        ("観測期間内の最安", yen(min(prices))),
+        ("観測期間内の最高", yen(max(prices))),
+        ("ランクイン日数", f"{len(obs)}日"),
+    ]
+    note = "" if current else (
+        f'<p class="empty">この商品は現在ランキング圏外です。表示は {h["last_date"]} 時点の情報です。</p>')
+    rows = []
+    for i in range(len(obs) - 1, -1, -1):
+        d, p = obs[i]
+        diff = p - obs[i - 1][1] if i else 0
+        diff_s = (f'<span class="down">▼{-diff:,}円</span>' if diff < 0
+                  else f"▲{diff:,}円" if diff > 0 else "—")
+        ranks = "、".join(f"{names.get(g, g)} {r}位" for g, r in h["obs"][d]["ranks"].items())
+        rows.append(f'<tr><td class="num">{d}</td><td class="num">{yen(p)}</td>'
+                    f'<td class="num">{diff_s}</td><td>{escape(ranks)}</td></tr>')
+    return (
+        f'<div class="item">{img}<div><h2>{escape(it["name"])}</h2>'
+        f'<p class="meta">{escape(it["shop"])}</p>{note}'
+        f'<div class="stats">{"".join(f"<div class=stat><b>{v}</b><span>{escape(k)}</span></div>" for k, v in stats)}</div>'
+        f'<a class="cta" href="{escape(it["url"])}" target="_blank" rel="sponsored nofollow noopener">'
+        f'楽天市場で最新価格を見る</a></div></div>'
+        f'<h2>価格の推移</h2><p class="lead">ランキング入りした日に観測した価格（1日1回）。圏外の日は観測していません。</p>'
+        f'{price_chart(obs)}'
+        f'<h2>観測記録</h2><p class="lead">新しい順</p>'
+        f'<table><thead><tr><th>日付</th><th>価格</th><th>前回比</th><th>順位</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>{CHART_JS}'
     )
 
 
@@ -162,6 +296,12 @@ def main() -> int:
     data = analyze(snaps)
     names = {g["id"]: g["name"] for g in config["genres"]}
 
+    # 2日以上観測できた商品だけ価格推移ページを作る（1日分だけの薄いページを出さない）
+    history = {c: h for c, h in build_history(snaps).items() if len(h["obs"]) >= 2}
+    for rows in data.values():
+        for it in rows:
+            it["page"] = item_filename(it["code"]) if it["code"] in history else None
+
     if SITE.exists():
         shutil.rmtree(SITE)
     SITE.mkdir(parents=True)
@@ -207,6 +347,17 @@ def main() -> int:
             f'{name}の人気ランキングと値下げ情報（{snap["date"]}）｜{config["site_name"]}',
             f'{name}ジャンルの人気ランキングTOP{len(rows)}と、値下げ・順位変動を毎日更新。',
             body, gid), encoding="utf-8")
+        pages.append(fname)
+
+    for code, h in history.items():
+        fname = item_filename(code)
+        short = h["info"]["name"][:40]
+        prices = [o["price"] for o in h["obs"].values()]
+        (SITE / fname).write_text(page(
+            config, snap, fname,
+            f'{short} の価格推移｜{config["site_name"]}',
+            f'{short} の価格推移。観測{len(prices)}日間の最安は{yen(min(prices))}、最高は{yen(max(prices))}。',
+            item_page_body(h, snap["date"], names), ""), encoding="utf-8")
         pages.append(fname)
 
     base = config["base_url"].rstrip("/")
